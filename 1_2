@@ -1,0 +1,248 @@
+import sys
+import requests
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from io import BytesIO
+
+class ImageQualityAnalyzer:
+    def __init__(self):
+        self.image = None
+        self.histograms = {}
+        self.quality_score = 0
+        
+    def load_remote_image(self, wikimedia_filename):
+        base_url = 'https://api.wikimedia.org/core/v1/commons/file/'
+        url = base_url + wikimedia_filename
+        
+        headers = {
+            'User-Agent': 'ImageQualityAnalyzer/1.0 (https://example.com/contact)'
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            file_data = response.json()
+            image_url = file_data['preferred']['url']
+            
+            image_response = requests.get(image_url, timeout=10)
+            image_response.raise_for_status()
+            
+            image_array = np.frombuffer(image_response.content, np.uint8)
+            self.image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            if self.image is None:
+                raise ValueError("Failed to decode image")
+                
+            self.image = cv2.cvtColor(self.image, cv2.COLOR_BGR2RGB)
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Error loading image: {e}")
+            return False
+        except (KeyError, ValueError) as e:
+            print(f"Error processing image data: {e}")
+            return False
+    
+    def calculate_histograms(self):
+        if self.image is None:
+            return
+        
+        gray_image = cv2.cvtColor(self.image, cv2.COLOR_RGB2GRAY)
+        
+        self.histograms['gray'] = cv2.calcHist([gray_image], [0], None, [256], [0, 256])
+        
+        colors = ('red', 'green', 'blue')
+        for i, color in enumerate(colors):
+            channel = self.image[:, :, i]
+            self.histograms[color] = cv2.calcHist([channel], [0], None, [256], [0, 256])
+    
+    def display_histograms(self):
+        if not self.histograms:
+            return
+        
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        fig.suptitle('Image Histograms', fontsize=16)
+        
+        axes[0, 0].imshow(self.image)
+        axes[0, 0].set_title('Original Image')
+        axes[0, 0].axis('off')
+        
+        axes[0, 1].plot(self.histograms['gray'], color='black')
+        axes[0, 1].set_title('Grayscale Histogram')
+        axes[0, 1].set_xlabel('Pixel Intensity')
+        axes[0, 1].set_ylabel('Frequency')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        colors = ['red', 'green', 'blue']
+        for color in colors:
+            axes[1, 0].plot(self.histograms[color], color=color, alpha=0.7)
+        axes[1, 0].set_title('RGB Channel Histograms')
+        axes[1, 0].set_xlabel('Pixel Intensity')
+        axes[1, 0].set_ylabel('Frequency')
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].legend(['Red', 'Green', 'Blue'])
+        
+        self._display_quality_metrics(axes[1, 1])
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def _display_quality_metrics(self, ax):
+        ax.axis('off')
+        
+        quality_text = self._analyze_quality()
+        
+        metrics_text = f"QUALITY ANALYSIS\n{'='*30}\n"
+        metrics_text += f"Overall Score: {self.quality_score:.1f}/10\n\n"
+        metrics_text += quality_text
+        
+        ax.text(0.1, 0.5, metrics_text, fontsize=11, 
+                fontfamily='monospace', verticalalignment='center')
+    
+    def _analyze_quality(self):
+        if not self.histograms:
+            return "No histograms calculated"
+        
+        gray_hist = self.histograms['gray'].flatten()
+        total_pixels = np.sum(gray_hist)
+        
+        under_exposed = np.sum(gray_hist[:50]) / total_pixels
+        over_exposed = np.sum(gray_hist[200:]) / total_pixels
+        well_exposed = np.sum(gray_hist[50:200]) / total_pixels
+        
+        contrast_score = self._calculate_contrast_score(gray_hist)
+        dynamic_range = self._calculate_dynamic_range(gray_hist)
+        color_balance = self._calculate_color_balance()
+        
+        quality_factors = []
+        
+        if under_exposed > 0.3:
+            quality_factors.append("Image may be underexposed")
+        elif over_exposed > 0.3:
+            quality_factors.append("Image may be overexposed")
+        elif well_exposed > 0.6:
+            quality_factors.append("Good exposure distribution")
+        
+        if contrast_score > 7:
+            quality_factors.append("Good contrast level")
+        elif contrast_score < 4:
+            quality_factors.append("Low contrast - image may appear flat")
+        
+        if dynamic_range > 200:
+            quality_factors.append("Wide dynamic range")
+        elif dynamic_range < 100:
+            quality_factors.append("Limited dynamic range")
+        
+        if abs(color_balance) < 0.1:
+            quality_factors.append("Good color balance")
+        else:
+            quality_factors.append("Color balance could be improved")
+        
+        self.quality_score = self._calculate_overall_score(
+            under_exposed, over_exposed, contrast_score, dynamic_range, color_balance)
+        
+        analysis_text = f"Exposure Analysis:\n"
+        analysis_text += f"  Underexposed: {under_exposed*100:.1f}%\n"
+        analysis_text += f"  Well exposed: {well_exposed*100:.1f}%\n"
+        analysis_text += f"  Overexposed: {over_exposed*100:.1f}%\n\n"
+        
+        analysis_text += f"Technical Metrics:\n"
+        analysis_text += f"  Contrast Score: {contrast_score:.1f}/10\n"
+        analysis_text += f"  Dynamic Range: {dynamic_range:.0f}\n"
+        analysis_text += f"  Color Balance: {color_balance:.3f}\n\n"
+        
+        analysis_text += f"Quality Assessment:\n"
+        for factor in quality_factors:
+            analysis_text += f"  • {factor}\n"
+        
+        return analysis_text
+    
+    def _calculate_contrast_score(self, histogram):
+        non_zero_indices = np.where(histogram > 0)[0]
+        
+        if len(non_zero_indices) < 2:
+            return 5.0
+        
+        spread = non_zero_indices[-1] - non_zero_indices[0]
+        
+        mean_intensity = np.sum(histogram * np.arange(256)) / np.sum(histogram)
+        variance = np.sum(histogram * (np.arange(256) - mean_intensity)**2) / np.sum(histogram)
+        
+        spread_score = min(spread / 25.5, 10.0)
+        variance_score = min(variance / 1000, 10.0)
+        
+        return (spread_score + variance_score) / 2
+    
+    def _calculate_dynamic_range(self, histogram):
+        non_zero_indices = np.where(histogram > 0)[0]
+        
+        if len(non_zero_indices) < 2:
+            return 0
+        
+        return non_zero_indices[-1] - non_zero_indices[0]
+    
+    def _calculate_color_balance(self):
+        if 'red' not in self.histograms or 'green' not in self.histograms or 'blue' not in self.histograms:
+            return 0.0
+        
+        red_mean = np.sum(self.histograms['red'] * np.arange(256)) / np.sum(self.histograms['red'])
+        green_mean = np.sum(self.histograms['green'] * np.arange(256)) / np.sum(self.histograms['green'])
+        blue_mean = np.sum(self.histograms['blue'] * np.arange(256)) / np.sum(self.histograms['blue'])
+        
+        avg_mean = (red_mean + green_mean + blue_mean) / 3
+        
+        red_diff = (red_mean - avg_mean) / 255
+        green_diff = (green_mean - avg_mean) / 255
+        blue_diff = (blue_mean - avg_mean) / 255
+        
+        return (abs(red_diff) + abs(green_diff) + abs(blue_diff)) / 3
+    
+    def _calculate_overall_score(self, under_exposed, over_exposed, contrast_score, dynamic_range, color_balance):
+        exposure_score = 10 * (1 - (under_exposed + over_exposed))
+        contrast_normalized = contrast_score
+        
+        dynamic_range_score = min(dynamic_range / 25.5, 10.0)
+        
+        color_balance_score = 10 * (1 - abs(color_balance))
+        
+        weights = {
+            'exposure': 0.35,
+            'contrast': 0.30,
+            'dynamic_range': 0.20,
+            'color_balance': 0.15
+        }
+        
+        overall_score = (
+            weights['exposure'] * exposure_score +
+            weights['contrast'] * contrast_normalized +
+            weights['dynamic_range'] * dynamic_range_score +
+            weights['color_balance'] * color_balance_score
+        )
+        
+        return overall_score
+
+def main():
+    if len(sys.argv) != 2:
+        # Usage: python image_analyzer.py <Wikimedia_Filename>
+        print("Example: python image_analyzer.py 'File:The_Blue_Marble.jpg'")
+        return
+    
+    wikimedia_filename = sys.argv[1]
+    
+    analyzer = ImageQualityAnalyzer()
+    
+    print(f"Loading image: {wikimedia_filename}")
+    if not analyzer.load_remote_image(wikimedia_filename):
+        print("Failed to load image. Please check the filename and network connection.")
+        return
+    
+    print("Calculating histograms...")
+    analyzer.calculate_histograms()
+    
+    print("Displaying results...")
+    analyzer.display_histograms()
+
+if __name__ == "__main__":
+    main()
