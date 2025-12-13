@@ -226,7 +226,7 @@ class ImageQualityAnalyzer:
 def main():
     if len(sys.argv) != 2:
         # Usage: python image_analyzer.py <Wikimedia_Filename>
-        print("Example: python image_analyzer.py 'File:The_Blue_Marble.jpg'")
+        print("Example: python image_analyzer.py 'File:June_odd-eyed-cat_cropped.jpg'")
         return
     
     wikimedia_filename = sys.argv[1]
